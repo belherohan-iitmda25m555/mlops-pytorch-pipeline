@@ -1,19 +1,24 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: fashion-mnist-serving
-  namespace: mlops
+  name: model-serving
+  namespace: ml-training
   labels:
-    app: fashion-mnist-serving
+    app: model-serving
 spec:
-  replicas: 1
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
-      app: fashion-mnist-serving
+      app: model-serving
   template:
     metadata:
       labels:
-        app: fashion-mnist-serving
+        app: model-serving
     spec:
       securityContext:
         runAsNonRoot: true
@@ -32,26 +37,23 @@ spec:
               value: /app/checkpoints/classifier_v1.pt
           resources:
             requests:
-              cpu: "100m"
-              memory: "256Mi"
-            limits:
               cpu: "500m"
               memory: "1Gi"
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: http
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 3
-            failureThreshold: 6
+            limits:
+              cpu: "1"
+              memory: "2Gi"
           livenessProbe:
             httpGet:
               path: /health
               port: http
-            initialDelaySeconds: 20
-            periodSeconds: 20
-            timeoutSeconds: 3
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 5
             failureThreshold: 3
           volumeMounts:
             - name: model-checkpoints

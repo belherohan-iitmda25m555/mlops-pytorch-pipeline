@@ -8,16 +8,17 @@ An end-to-end MLOps pipeline for training and serving a Fashion-MNIST image clas
 flowchart TD
     A[Training YAML] --> B[PyTorch Training Job]
     C[Fashion-MNIST] --> B
-    B --> D[(Model Checkpoint PVC)]
-    D --> E[FastAPI Deployment]
-    F[Image Request] --> G[Kubernetes Service]
-    G --> E
-    E --> H[Prediction and Probabilities]
-    I[HPA] --> E
-    J[GitHub Actions] --> K[Tests and Validation]
+    B --> D[(Checkpoint PVC)]
+    E[(Dataset PVC)] --> B
+    D --> F[FastAPI Deployment]
+    G[Image Request] --> H[Kubernetes Service]
+    H --> F
+    F --> I[Prediction and Probabilities]
+    J[HPA] --> F
+    K[GitHub Actions] --> L[Tests and Validation]
 ```
 
-The training workload reads version-controlled YAML configuration, downloads Fashion-MNIST, emits structured JSON-line metrics, and saves the best checkpoint. The serving workload loads that checkpoint and exposes health and prediction endpoints. Kubernetes provides persistent storage, resource controls, probes, service discovery, and horizontal autoscaling.
+The training workload reads version-controlled YAML configuration, downloads Fashion-MNIST, emits structured JSON-line metrics, and saves the best checkpoint. Separate persistent volumes store the dataset and trained checkpoint. The serving workload loads the checkpoint and exposes health and prediction endpoints. Kubernetes provides persistent storage, resource controls, probes, service discovery, rolling updates, and horizontal autoscaling.
 
 ## Features
 
@@ -34,9 +35,11 @@ The training workload reads version-controlled YAML configuration, downloads Fas
 - Non-root serving container
 - Docker health check
 - Kubernetes training Job and ConfigMap
-- Persistent checkpoint storage
-- Serving Deployment and ClusterIP Service
+- Separate persistent volumes for training data and checkpoints
+- Two-replica serving Deployment
+- ClusterIP Service
 - Readiness and liveness probes
+- Rolling-update deployment strategy
 - CPU-based HorizontalPodAutoscaler
 - GitHub Actions test and validation workflow
 - Feature-branch and pull-request development workflow
@@ -54,6 +57,8 @@ mlops-pytorch-pipeline/
 │   ├── Dockerfile.train
 │   └── Dockerfile.serve
 ├── docs/
+│   ├── reflection.md
+│   ├── validation.md
 │   └── screenshots/
 ├── k8s/
 │   ├── configmap.yaml
@@ -85,7 +90,7 @@ mlops-pytorch-pipeline/
 - Docker Desktop
 - `kubectl`
 - Minikube
-- GitHub CLI (optional)
+- GitHub CLI
 
 ## Local Setup
 
@@ -179,7 +184,12 @@ docker run --rm -v "${PWD}/data:/app/data" -v "${PWD}/checkpoints:/app/checkpoin
 docker run --rm --name mlops-serve -p 8080:8080 -v "${PWD}/checkpoints:/app/checkpoints:ro" mlops-serve:v1
 ```
 
-Test the container using the same `/health` and `/predict` commands shown above.
+Test the container using:
+
+```powershell
+curl.exe http://127.0.0.1:8080/health
+curl.exe -X POST http://127.0.0.1:8080/predict -F "image=@data/test_image.png"
+```
 
 ## Kubernetes with Minikube
 
@@ -190,18 +200,29 @@ minikube start --driver=docker --cpus=4 --memory=8192
 minikube addons enable metrics-server
 ```
 
-### Load Local Images
+### Load Local Docker Images
+
+Docker Desktop and Minikube maintain separate image stores. Load both local images into Minikube:
 
 ```powershell
 minikube image load mlops-train:v1
 minikube image load mlops-serve:v1
 ```
 
-### Validate Manifests
+Verify:
+
+```powershell
+minikube image ls | Select-String "mlops-train"
+minikube image ls | Select-String "mlops-serve"
+```
+
+### Validate Kubernetes Manifests
 
 ```powershell
 kubectl apply --dry-run=client -f k8s\
 ```
+
+The validation should report eight resources because `pvc.yaml` contains separate claims for training data and model checkpoints.
 
 ### Deploy Training Resources
 
@@ -210,8 +231,26 @@ kubectl apply -f k8s\namespace.yaml
 kubectl apply -f k8s\configmap.yaml
 kubectl apply -f k8s\pvc.yaml
 kubectl apply -f k8s\training-job.yaml
-kubectl logs -n mlops job/fashion-mnist-training -f
 ```
+
+Follow the training log:
+
+```powershell
+kubectl logs -n ml-training job/fashion-mnist-training -f
+```
+
+Verify the Job, pod, and persistent volumes:
+
+```powershell
+kubectl get jobs,pods,pvc -n ml-training
+```
+
+Expected results:
+
+- Training Job: `Complete 1/1`
+- Training pod: `Completed`
+- `training-data-pvc`: `Bound`
+- `model-checkpoints-pvc`: `Bound`
 
 ### Deploy Serving Resources
 
@@ -219,31 +258,77 @@ kubectl logs -n mlops job/fashion-mnist-training -f
 kubectl apply -f k8s\serving-deployment.yaml
 kubectl apply -f k8s\serving-service.yaml
 kubectl apply -f k8s\hpa.yaml
-kubectl rollout status deployment/fashion-mnist-serving -n mlops
+```
+
+Wait for the two-replica Deployment:
+
+```powershell
+kubectl rollout status deployment/model-serving -n ml-training --timeout=240s
 ```
 
 ### Inspect Kubernetes Resources
 
 ```powershell
-kubectl get jobs,pods,pvc -n mlops
-kubectl get deployments,services -n mlops
-kubectl get hpa -n mlops
+kubectl get deployments,pods,services -n ml-training
+kubectl get hpa -n ml-training
 ```
+
+Expected serving state:
+
+- Deployment: `2/2` available
+- Two serving pods: `1/1 Running`
+- ClusterIP Service: port `80`
+- HPA: minimum `2`, maximum `4`
+- HPA target CPU utilization: `70%`
 
 ### Test the Kubernetes API
 
-Start port forwarding:
+Start port forwarding in one terminal:
 
 ```powershell
-kubectl port-forward -n mlops service/fashion-mnist-serving 8080:8080
+kubectl port-forward -n ml-training service/model-serving 8080:80
 ```
 
-In a second terminal:
+In a second PowerShell terminal, run:
 
 ```powershell
 curl.exe http://127.0.0.1:8080/health
+```
+
+```powershell
 curl.exe -X POST http://127.0.0.1:8080/predict -F "image=@data/test_image.png"
 ```
+
+The health endpoint should return a healthy status. The prediction endpoint should return the predicted class, class index, and probabilities for all ten classes.
+
+## Kubernetes Specification
+
+### Training Job
+
+- Namespace: `ml-training`
+- ConfigMap mounted at `/app/configs`
+- Dataset PVC mounted at `/app/data`
+- Checkpoint PVC mounted at `/app/checkpoints`
+- CPU request and limit: `2`
+- Memory request and limit: `4Gi`
+
+### Serving Deployment
+
+- Replicas: `2`
+- Checkpoint PVC mounted read-only
+- Non-root user
+- Liveness probe: `/health` every 10 seconds
+- Readiness probe: `/health` every 5 seconds after a 15-second delay
+- Requests: `500m` CPU and `1Gi` memory
+- Limits: `1` CPU and `2Gi` memory
+- Rolling update: `maxSurge: 1`, `maxUnavailable: 0`
+
+### Serving Service and HPA
+
+- ClusterIP Service: port `80` targeting container port `8080`
+- HPA minimum replicas: `2`
+- HPA maximum replicas: `4`
+- Target CPU utilization: `70%`
 
 ## CI/CD
 
@@ -255,7 +340,11 @@ GitHub Actions runs on pushes and pull requests targeting `main` or `develop`. T
 4. Validates configuration and Kubernetes YAML.
 5. Checks both Dockerfiles.
 
-Workflow file: `.github/workflows/ci.yml`
+Workflow file:
+
+```text
+.github/workflows/ci.yml
+```
 
 ## Validation Results
 
@@ -269,15 +358,25 @@ Workflow file: `.github/workflows/ci.yml`
 | Checkpoint | `classifier_v1.pt` saved |
 | Container `/health` | HTTP 200 |
 | Container `/predict` | HTTP 200 |
-| Kubernetes training Job | Completed |
-| Kubernetes Deployment | 1/1 available |
-| Kubernetes HPA | CPU metrics available, target 70% |
+| Kubernetes manifest dry-run | Eight resources validated |
+| Kubernetes training Job | Complete 1/1 |
+| Training data PVC | Bound, 2Gi |
+| Checkpoint PVC | Bound, 1Gi |
+| Kubernetes Deployment | 2/2 available |
+| Kubernetes Service | ClusterIP, port 80 |
+| Kubernetes HPA | CPU metrics available, 2–4 replicas |
 | Kubernetes `/health` | HTTP 200 |
 | Kubernetes `/predict` | HTTP 200 |
 
+Complete terminal evidence is available in:
+
+```text
+docs/validation.md
+```
+
 ## Development Workflow
 
-Development was performed through isolated feature branches and pull requests into `develop`.
+All development was completed using feature branches and pull requests into `develop`, followed by release integration into `main`.
 
 | PR | Scope |
 |---|---|
@@ -286,6 +385,8 @@ Development was performed through isolated feature branches and pull requests in
 | [PR #3](https://github.com/belherohan-iitmda25m555/mlops-pytorch-pipeline/pull/3) | Docker containerization |
 | [PR #4](https://github.com/belherohan-iitmda25m555/mlops-pytorch-pipeline/pull/4) | Kubernetes deployment |
 | [PR #5](https://github.com/belherohan-iitmda25m555/mlops-pytorch-pipeline/pull/5) | GitHub Actions CI |
+| [PR #6](https://github.com/belherohan-iitmda25m555/mlops-pytorch-pipeline/pull/6) | Documentation, validation evidence, and reflection |
+| [PR #7](https://github.com/belherohan-iitmda25m555/mlops-pytorch-pipeline/pull/7) | Initial release integration |
 
 ## API Endpoints
 
@@ -293,13 +394,34 @@ Development was performed through isolated feature branches and pull requests in
 
 Returns the service status and configured checkpoint path.
 
+Example:
+
+```json
+{
+  "status": "healthy",
+  "model_path": "/app/checkpoints/classifier_v1.pt"
+}
+```
+
 ### `POST /predict`
 
 Accepts a grayscale image as multipart form data and returns:
 
 - Predicted Fashion-MNIST class
 - Predicted class index
-- Probabilities for all ten classes
+- Probabilities for all ten Fashion-MNIST classes
+
+## Project Reflection
+
+The complete 300–500 word reflection is available in:
+
+```text
+docs/reflection.md
+```
+
+## AI-Assistance Disclosure
+
+OpenAI ChatGPT was used as a learning and review assistant for project planning, command guidance, debugging, and rubric verification. All generated suggestions were reviewed, tested, adapted, and validated by the repository author. The author is responsible for the final implementation and is prepared to explain every component during a code review.
 
 ## License
 
