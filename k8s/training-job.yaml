@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: fashion-mnist-training
-  namespace: mlops
+  namespace: ml-training
   labels:
     app: fashion-mnist-training
 spec:
@@ -22,15 +22,14 @@ spec:
               value: /app/configs/training_config.yaml
           resources:
             requests:
-              cpu: "500m"
-              memory: "1Gi"
+              cpu: "2"
+              memory: "4Gi"
             limits:
               cpu: "2"
               memory: "4Gi"
           volumeMounts:
             - name: training-config
-              mountPath: /app/configs/training_config.yaml
-              subPath: training_config.yaml
+              mountPath: /app/configs
               readOnly: true
             - name: training-data
               mountPath: /app/data
@@ -41,7 +40,8 @@ spec:
           configMap:
             name: training-config
         - name: training-data
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: training-data-pvc
         - name: model-checkpoints
           persistentVolumeClaim:
             claimName: model-checkpoints-pvc
