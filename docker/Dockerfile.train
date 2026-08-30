@@ -1,0 +1,23 @@
+# Stage 1: Install pinned training dependencies
+FROM python:3.11-slim AS base
+
+WORKDIR /app
+
+COPY requirements/train.txt /tmp/train-requirements.txt
+
+RUN python -m pip install --no-cache-dir \
+    -r /tmp/train-requirements.txt
+
+
+# Stage 2: Training runtime
+FROM base AS training
+
+WORKDIR /app
+
+COPY src/ ./src/
+COPY configs/ ./configs/
+
+ENV PYTHONUNBUFFERED=1
+ENV CONFIG_PATH=/app/configs/training_config.yaml
+
+ENTRYPOINT ["python", "src/train.py"]

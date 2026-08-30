@@ -1,5 +1,4 @@
 """Fashion-MNIST dataset and DataLoader utilities."""
-
 from pathlib import Path
 from typing import Tuple
 
