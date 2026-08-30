@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fashion-mnist-training
+  namespace: mlops
+  labels:
+    app: fashion-mnist-training
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: fashion-mnist-training
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: trainer
+          image: mlops-train:v1
+          imagePullPolicy: Never
+          env:
+            - name: CONFIG_PATH
+              value: /app/configs/training_config.yaml
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          volumeMounts:
+            - name: training-config
+              mountPath: /app/configs/training_config.yaml
+              subPath: training_config.yaml
+              readOnly: true
+            - name: training-data
+              mountPath: /app/data
+            - name: model-checkpoints
+              mountPath: /app/checkpoints
+      volumes:
+        - name: training-config
+          configMap:
+            name: training-config
+        - name: training-data
+          emptyDir: {}
+        - name: model-checkpoints
+          persistentVolumeClaim:
+            claimName: model-checkpoints-pvc

@@ -1,0 +1,29 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements/serve.txt /tmp/serve-requirements.txt
+
+RUN python -m pip install --no-cache-dir \
+    -r /tmp/serve-requirements.txt \
+    && useradd --create-home \
+        --uid 10001 \
+        --shell /usr/sbin/nologin \
+        appuser
+
+COPY --chown=appuser:appuser src/ ./src/
+
+USER appuser
+
+ENV PYTHONUNBUFFERED=1
+ENV MODEL_PATH=/app/checkpoints/classifier_v1.pt
+
+EXPOSE 8080
+
+HEALTHCHECK \
+    --interval=10s \
+    --timeout=3s \
+    --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')" || exit 1
+
+CMD ["python", "-m", "uvicorn", "src.serve:app", "--host", "0.0.0.0", "--port", "8080"]
