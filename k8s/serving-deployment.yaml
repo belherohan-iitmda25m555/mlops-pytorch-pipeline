@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fashion-mnist-serving
+  namespace: mlops
+  labels:
+    app: fashion-mnist-serving
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fashion-mnist-serving
+  template:
+    metadata:
+      labels:
+        app: fashion-mnist-serving
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: api
+          image: mlops-serve:v1
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: MODEL_PATH
+              value: /app/checkpoints/classifier_v1.pt
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: model-checkpoints
+              mountPath: /app/checkpoints
+              readOnly: true
+      volumes:
+        - name: model-checkpoints
+          persistentVolumeClaim:
+            claimName: model-checkpoints-pvc
